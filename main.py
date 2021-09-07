@@ -3,13 +3,6 @@ import pytesseract
 from PIL import Image
 import numpy as np
 
-erode_size = 2
-erode_kernel = np.ones((erode_size, erode_size), np.uint8)
-
-MAX_LETTER_FRAC = 0.1
-CONTOUR_AREA_FRAC = 0.9
-CONTOUR_AVERAGE_CUTOFF = 240
-
 
 def find_contours_with_points(points, contours, top_contour_indicies, children):
     to_ret = []
@@ -31,91 +24,144 @@ def find_contours_with_points(points, contours, top_contour_indicies, children):
     return to_ret
 
 
-# img_cv = cv2.imread(r'Azumanga_Daioh_p007.png')
-img_cv = cv2.imread(r'bloom.png')
-height = img_cv.shape[0]
-width = img_cv.shape[1]
+def get_contours(img, thresh=200, max_contour_area_frac=0.9, min_contour_area_frac=0.0004, erode_size=-1):
+    height = img.shape[0]
+    width = img.shape[1]
+    area = width * height
 
-img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-img_out = img_cv.copy()
+    # Threshhold image
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ret, threshed = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
 
-gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    # Erode and dilate
+    if erode_size > 0:
+        erode_kernel = np.ones((erode_size, erode_size), np.uint8)
+        threshed = cv2.erode(threshed, erode_kernel)
+        threshed = cv2.dilate(threshed, erode_kernel)
 
-ret, threshed = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-# threshed = cv2.erode(threshed, erode_kernel)
-# threshed = cv2.dilate(threshed, erode_kernel)
-cv2.imwrite("thresh.png", threshed)
-# edges = cv2.Canny(threshed, 100, 200)
-# cv2.imwrite("edging.png", edges)
-contours, hierarchy = cv2.findContours(threshed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-top_contours = []
-contour_children = [[] for i in range(len(contours))]
-print(len(hierarchy[0]))
-for i in range(len(contours)):
-    parent = hierarchy[0][i][3]
-    if parent == -1:
-        top_contours.append(i)
-    else:
-        contour_children[parent].append(i)
+    # Get all contours
+    contours, hierarchy = cv2.findContours(threshed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-# contoured = cv2.drawContours(img_cv, contours, -1, (0, 255, 0), 1)
-# cv2.imwrite("contours.png", contoured)
+    # Organize hierarchy in useful way
+    top_contour_candidates = []
+    top_contours = []
+    contour_children = [[] for _ in range(len(contours))]
+    print(len(hierarchy[0]))
+    for i in range(len(contours)):
+        _, _, cont_w, cont_h = cv2.boundingRect(contours[i])
+        if cont_w * cont_h > area * min_contour_area_frac:
+            parent = hierarchy[0][i][3]
+            if parent == -1:
+                top_contour_candidates.append(i)
+            else:
+                contour_children[parent].append(i)
 
-# By default OpenCV stores images in BGR format and since pytesseract assumes RGB format,
-# we need to convert from BGR to RGB format/mode:
+    # Get panels, can't be too big
+    top_contours = get_top_contours(contours, top_contour_candidates, contour_children, area * max_contour_area_frac)
 
-good_contours = set()
+    return contours, top_contours, contour_children
 
-while True:
-    img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-    img_display = img_cv.copy()
-    boxes = pytesseract.image_to_boxes(img_rgb)
 
-    containing_contours = set()
-    new_good_contours = set()
+def get_top_contours(contours, candidates, contour_children, max_contour_area):
+    top_contours = []
+    while candidates:
+        contour_idx = candidates.pop(0)
+        if cv2.contourArea(contours[contour_idx]) < max_contour_area:
+            top_contours.append(contour_idx)
+        else:
+            candidates += contour_children[contour_idx]
+    return top_contours
 
-    boxes_list = boxes.split("\n")
 
-    for box in boxes_list:
-        box_elems = box.split(" ")
-        if len(box_elems) >= 5:
-            box_coords = list(map(int, box_elems[1:5]))
-            corners = [(box_coords[0], height - box_coords[1]), (box_coords[2], height - box_coords[3])]
-            if abs(box_coords[0] - box_coords[2]) / width < MAX_LETTER_FRAC and abs(box_coords[1] - box_coords[3]) / height < MAX_LETTER_FRAC:
-                img_display = cv2.rectangle(img=img_display, pt1=corners[0], pt2=corners[1], color=(255, 0, 0), thickness=2)
-                img_cv = cv2.rectangle(img=img_cv, pt1=corners[0], pt2=corners[1], color=(255, 255, 255), thickness=-1)
-                if find_contours_with_points(corners, contours, top_contours, contour_children):
-                    containing_contours.add(find_contours_with_points(corners, contours, top_contours, contour_children)[-1])
+def get_speech_contours(img, contours, top_contours, contour_children, max_letter_frac=0.1, contour_average_cutoff=240, debug_image_name=""):
+    img_cv = img.copy()
+    height = img.shape[0]
+    width = img.shape[1]
+    good_contours = set()
+    count = 0
 
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    while True:
+        img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
 
-    containing_contours = list(filter(lambda x: cv2.contourArea(contours[x]) < width * height * CONTOUR_AREA_FRAC, containing_contours))
+        if debug_image_name:
+            img_display = img_cv.copy()
 
-    for contour_idx in containing_contours:
-        mask = np.zeros(gray.shape, np.uint8)
-        cv2.drawContours(mask, [contours[contour_idx]], -1, 255, -1)
-        mean = cv2.mean(gray, mask=mask)
-        if mean[0] > CONTOUR_AVERAGE_CUTOFF:
-            cv2.drawContours(img_display, contours, contour_idx, (0, 255, 0), 3)
-            cv2.drawContours(img_cv, contours, contour_idx, (255, 255, 255), -1)
-            new_good_contours.add(contour_idx)
+        containing_contours = set()
+        new_good_contours = set()
 
-    cv2.namedWindow('letters', cv2.WINDOW_NORMAL)
-    cv2.imshow("letters", img_display)
-    # waits for user to press any key
-    # (this is necessary to avoid Python kernel form crashing)
-    cv2.waitKey(0)
+        boxes = pytesseract.image_to_boxes(img_rgb)
+        boxes_list = boxes.split("\n")
 
-    # closing all open windows
-    cv2.destroyAllWindows()
+        for box in boxes_list:
+            box_elems = box.split(" ")
+            if len(box_elems) >= 5:
+                box_coords = list(map(int, box_elems[1:5]))
+                corners = [(box_coords[0], height - box_coords[1]), (box_coords[2], height - box_coords[3])]
 
-    if len(new_good_contours) == 0:
-        break
-    else:
-        good_contours.update(new_good_contours)
-        print("Added " + str(len(new_good_contours)) + " new contours")
+                # Check that letter box isn't too big
+                if abs(box_coords[0] - box_coords[2]) / width < max_letter_frac and \
+                        abs(box_coords[1] - box_coords[3]) / height < max_letter_frac:
 
-for contour_idx in good_contours:
-    cv2.drawContours(img_out, contours, contour_idx, (255, 255, 255), -1)
+                    if debug_image_name:
+                        img_display = cv2.rectangle(img_display, corners[0], corners[1], (255, 0, 0), 2)
 
-cv2.imwrite("img_out.png", img_out)
+                    # White out letter so it's not detected in future rounds
+                    img_cv = cv2.rectangle(img_cv, corners[0], corners[1], (255, 255, 255), -1)
+
+                    # find containing contour
+                    if find_contours_with_points(corners, contours, top_contours, contour_children):
+                        containing_contours.add(find_contours_with_points(corners, contours, top_contours,
+                                                                          contour_children)[-1])
+                elif debug_image_name:
+                    print(debug_image_name + " round " + str(count) + ": too large letter")
+                    img_display = cv2.rectangle(img_display, corners[0], corners[1], (0, 0, 255), 2)
+
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+        for contour_idx in containing_contours:
+            # Mask to just the contour and check the average color
+            mask = np.zeros(gray.shape, np.uint8)
+            cv2.drawContours(mask, [contours[contour_idx]], -1, 255, -1)
+            mean = cv2.mean(gray, mask=mask)
+
+            # If the contour is a speech bubble, it'll be almost all white
+            if mean[0] > contour_average_cutoff:
+                if debug_image_name:
+                    cv2.drawContours(img_display, contours, contour_idx, (0, 255, 0), 3)
+                cv2.drawContours(img_cv, contours, contour_idx, (255, 255, 255), -1)
+                new_good_contours.add(contour_idx)
+
+        if debug_image_name:
+            print("Added " + str(len(new_good_contours)) + " new contours")
+            cv2.imwrite(debug_image_name + "_" + str(count) + ".png", img_display)
+
+        if len(new_good_contours) == 0:
+            break
+        else:
+            good_contours.update(new_good_contours)
+
+        count = count + 1
+
+    return good_contours, img_cv
+
+
+img_azumanga = cv2.imread(r'azumanga.png')
+contours_azu, top_contours_azu, contour_children_azu = get_contours(img_azumanga)
+
+for i in range(len(top_contours_azu)):
+    panel_x, panel_y, panel_w, panel_h = cv2.boundingRect(contours_azu[top_contours_azu[i]])
+    panel_img = img_azumanga[panel_y:(panel_y+panel_h), panel_x:(panel_x+panel_w)]
+    cv2.imwrite("panel_" + str(i) + "_pre.png", panel_img)
+    panel_contours, _ = get_speech_contours(panel_img, contours_azu, contour_children_azu[top_contours_azu[i]],
+                                            contour_children_azu, debug_image_name="panel_" + str(i) + "_debug")
+    for bubble_idx in panel_contours:
+        cv2.drawContours(panel_img, contours_azu, bubble_idx, (255, 255, 255), -1)
+    cv2.imwrite("panel_" + str(i) + ".png", panel_img)
+
+# good_contours, _ = get_speech_contours(img_azumanga, contours_azu, top_contours_azu, contour_children_azu)
+
+# img_out = img_azumanga.copy()
+# for i in good_contours:
+#     cv2.drawContours(img_out, contours_azu, i, (255, 255, 255), -1)
+#
+# cv2.imwrite("img_out.png", img_out)
