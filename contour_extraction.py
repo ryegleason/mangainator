@@ -1,8 +1,7 @@
 import cv2
-import pytesseract
-from PIL import Image
 import numpy as np
-
+import pytesseract
+from functools import cmp_to_key
 
 def find_contours_with_points(points, contours, top_contour_indicies, children, point_shift=(0, 0)):
     to_ret = []
@@ -71,7 +70,6 @@ def get_top_contours(contours, candidates, contour_children, max_contour_area):
         else:
             candidates += contour_children[contour_idx]
     return top_contours
-
 
 def get_speech_contours(img, contours, top_contours, contour_children, point_shift=(0, 0), max_letter_frac=0.1,
                         contour_average_cutoff=240, min_convexity=0.9, debug_image_name=""):
@@ -161,22 +159,77 @@ def extract_panels(img):
     return to_ret
 
 
+class Bubble:
+
+    def __init__(self, contour):
+        self.contour = contour
+        x, y, w, h = cv2.boundingRect(contour)
+        self.leftX = x
+        self.rightX = x + w
+        self.topY = y
+        self.bottomY = y + h
+
+    def __lt__(self, other):
+        # If the right edge of the other bubble is to the left of the left edge of this bubble
+        # i.e. this bubble is completely to the right of the other
+        if other.rightX < self.leftX:
+            return True
+        # opposite situation
+        if self.rightX < other.leftX:
+            return False
+        # So the bubbles must lie in the same "column." Just go off of top Y
+        return self.topY < other.topY
+
+
 class Panel:
 
-    def __init__(self, border, bubbles):
+    def __init__(self, border, bubble_contours, ordering="4koma"):
         self.border = border
-        self.bubbles = bubbles
+        x, y, w, h = cv2.boundingRect(border)
+        self.leftX = x
+        self.rightX = x + w
+        self.topY = y
+        self.bottomY = y + h
+        self.bubbles = list(map(lambda x: Bubble(x), bubble_contours))
+        self.bubbles.sort()
+        self.ordering = ordering
 
     def blank_bubbles(self, img):
         for bubble in self.bubbles:
-            cv2.drawContours(img, [bubble], 0, (255, 255, 255), -1)
+            cv2.drawContours(img, [bubble.contour], 0, (255, 255, 255), -1)
+
+    def __lt__(self, other):
+        if self.ordering == "4koma":
+            # If the right edge of the other panel is to the left of the left edge of this panel
+            # i.e. this panel is completely to the right of the other
+            if other.rightX < self.leftX:
+                return True
+            # opposite situation
+            if self.rightX < other.leftX:
+                return False
+            # So the panels must lie in the same column. Just go off of top Y
+            return self.topY < other.topY
 
 
-img_azumanga = cv2.imread(r'azumanga.png')
-azumanga_panels = extract_panels(img_azumanga)
+if __name__ == "__main__":
+    img_azumanga = cv2.imread(r'azumanga.png')
+    azumanga_panels = extract_panels(img_azumanga)
 
-for panel in azumanga_panels:
-    panel.blank_bubbles(img_azumanga)
+    for panel in azumanga_panels:
+        panel.blank_bubbles(img_azumanga)
 
-cv2.imwrite("out.png", img_azumanga)
+    cv2.imwrite("out.png", img_azumanga)
+    # img_bloom = cv2.imread(r"bloom.png")
+    # img_bloom = cv2.blur(img_bloom, (5, 5))
+    # border_thickness = 1
+    # bloom_shape = img_bloom.shape
+    # bordered_img = np.zeros((bloom_shape[0] + border_thickness * 2, bloom_shape[1] + border_thickness * 2, bloom_shape[2]), np.uint8)
+    # # bordered_img = cv2.bitwise_not(bordered_img)
+    # bordered_img[border_thickness:border_thickness+bloom_shape[0], border_thickness:border_thickness+bloom_shape[1]] = img_bloom
+    # contours, top_contours, contour_children = get_contours(bordered_img)
+    # for contour in top_contours:
+    #     cv2.drawContours(bordered_img, contours, contour, (255, 0, 0), 3)
+    # cv2.imwrite("contours.png", bordered_img)
+
+
 
