@@ -17,13 +17,14 @@ font = ImageFont.truetype("CourierPrime-Regular.ttf", FONT_SIZE)
 
 
 def add_text(img, panels, text, text_ptr=0, debug_filename=""):
-    im_p = Image.fromarray(img)
+    im_pil = Image.fromarray(img)
 
     if debug_filename:
         debug_img = img.copy()
 
     # Get a drawing context
-    draw = ImageDraw.Draw(im_p)
+    draw = ImageDraw.Draw(im_pil)
+
     # Needs to be a letter with a descender
     letter_size = draw.textsize("y", font=font)
 
@@ -31,6 +32,9 @@ def add_text(img, panels, text, text_ptr=0, debug_filename=""):
         for bubble in panel.bubbles:
             line_structure = []
             letter_locations = []
+
+            # "Overlay" a grid onto text bubbles and find the boxes that lie entirely within the bubble, and select
+            # those as the ones to add text to.
             for letter_top_y in range(bubble.topY, bubble.bottomY, letter_size[1]):
                 line_structure += [0]
                 letter_locations += [[]]
@@ -47,6 +51,12 @@ def add_text(img, panels, text, text_ptr=0, debug_filename=""):
                             cv2.rectangle(debug_img, corners[0], corners[2], (0, 255, 0), 1)
                     elif debug_filename:
                         cv2.rectangle(debug_img, corners[0], corners[2], (0, 0, 255), 1)
+
+            if debug_filename:
+                debug_pil_img = Image.fromarray(debug_img)
+                debug_draw = ImageDraw.Draw(debug_pil_img)
+
+            # Fit the letters from the text into the given acceptable grid squares
             for line_num in range(len(line_structure)):
                 total_letters = line_structure[line_num]
                 letters_remaining = total_letters
@@ -57,7 +67,7 @@ def add_text(img, panels, text, text_ptr=0, debug_filename=""):
                     if word_end == -1:
                         word_end = len(text)
                     word_length = word_end - text_ptr
-                    if word_length < letters_remaining:
+                    if word_length <= letters_remaining:
                         line_content += text[text_ptr:word_end] + " "
                         letters_remaining -= word_length + 1
                         text_ptr = word_end + 1
@@ -78,11 +88,16 @@ def add_text(img, panels, text, text_ptr=0, debug_filename=""):
                     front_padding = math.ceil((total_letters - len(line_content)) / 2)
                     # print("Front padding: " + str(front_padding) + ", total letters: " + str(total_letters))
                     draw.text(letter_locations[line_num][front_padding], line_content, (0, 0, 0), font=font)
+                    if debug_filename:
+                        debug_draw.text(letter_locations[line_num][front_padding], line_content, (0, 0, 0), font=font)
+
+            if debug_filename:
+                debug_img = np.array(debug_pil_img)
 
     if debug_filename:
         cv2.imwrite(debug_filename, debug_img)
 
-    return np.array(im_p), text_ptr
+    return np.array(im_pil), text_ptr
 
 
 if __name__ == "__main__":
