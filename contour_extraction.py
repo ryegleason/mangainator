@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
 import pytesseract
+import glob
 from functools import cmp_to_key
+
 
 def find_contours_with_points(points, contours, top_contour_indicies, children, point_shift=(0, 0)):
     to_ret = []
@@ -24,7 +26,8 @@ def find_contours_with_points(points, contours, top_contour_indicies, children, 
     return to_ret
 
 
-def get_contours(img, thresh=200, max_contour_area_frac=0.9, min_contour_area_frac=0.0004, erode_size=-1):
+def get_contours(img, thresh=200, max_contour_area_frac=0.9, min_contour_area_frac=0.0004, erode_size=-1,
+                 threshed_out_file=""):
     height = img.shape[0]
     width = img.shape[1]
     area = width * height
@@ -32,6 +35,8 @@ def get_contours(img, thresh=200, max_contour_area_frac=0.9, min_contour_area_fr
     # Threshhold image
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     ret, threshed = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+    if threshed_out_file:
+        cv2.imwrite(threshed_out_file, threshed)
 
     # Erode and dilate
     if erode_size > 0:
@@ -45,7 +50,6 @@ def get_contours(img, thresh=200, max_contour_area_frac=0.9, min_contour_area_fr
     # Organize hierarchy in useful way
     top_contour_candidates = []
     contour_children = [[] for _ in range(len(contours))]
-    print(len(hierarchy[0]))
     for i in range(len(contours)):
         _, _, cont_w, cont_h = cv2.boundingRect(contours[i])
         if cont_w * cont_h > area * min_contour_area_frac:
@@ -70,6 +74,52 @@ def get_top_contours(contours, candidates, contour_children, max_contour_area):
         else:
             candidates += contour_children[contour_idx]
     return top_contours
+
+
+def get_bg_contour(contours, candidates, min_hull_area):
+    best_candidate = None
+    best_candidate_hull_area = 0
+    for candidate_idx in candidates:
+        candidate_hull_area = cv2.contourArea(cv2.convexHull(contours[candidate_idx]))
+        if candidate_hull_area > best_candidate_hull_area:
+            best_candidate = candidate_idx
+            best_candidate_hull_area = candidate_hull_area
+    if best_candidate_hull_area > min_hull_area:
+        return best_candidate
+    else:
+        return None
+
+
+def get_panel_lines(img, thresh=50, erode_size=1, line_min_frac=0.25):
+    height = img.shape[0]
+    width = img.shape[1]
+    smaller_dim = min(height, width)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ret, threshed = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
+    struct_element = cv2.getStructuringElement(cv2.MORPH_RECT, (2*erode_size + 1, 2*erode_size + 1), (erode_size, erode_size))
+    threshed = cv2.erode(threshed, struct_element)
+    threshed = cv2.dilate(threshed, struct_element)
+    edges = cv2.Canny(threshed, 100, 200)
+    edges = cv2.dilate(edges, struct_element)
+    return cv2.HoughLines(edges & threshed, 1, np.pi / 180, int(smaller_dim * line_min_frac))
+
+
+def draw_hough_lines(img, lines, thickness=3, color=(0, 0, 255)):
+    diag = int(np.linalg.norm(img.shape[:2]))
+    if lines is not None:
+        for line in lines:
+            rho, theta = line[0]
+            a = np.cos(theta)
+            b = np.sin(theta)
+            x0 = a * rho
+            y0 = b * rho
+            x1 = int(x0 + diag * b)
+            y1 = int(y0 - diag * a)
+            x2 = int(x0 - diag * b)
+            y2 = int(y0 + diag * a)
+            cv2.line(img, (x1, y1), (x2, y2), color, thickness)
+    return img
+
 
 def get_speech_contours(img, contours, top_contours, contour_children, point_shift=(0, 0), max_letter_frac=0.1,
                         contour_average_cutoff=240, min_convexity=0.9, debug_image_name=""):
@@ -212,24 +262,81 @@ class Panel:
 
 
 if __name__ == "__main__":
-    img_azumanga = cv2.imread(r'azumanga.png')
-    azumanga_panels = extract_panels(img_azumanga)
+    # img_azumanga = cv2.imread(r'azumanga.png')
+    # azumanga_panels = extract_panels(img_azumanga)
+    #
+    # for panel in azumanga_panels:
+    #     panel.blank_bubbles(img_azumanga)
+    #
+    # cv2.imwrite("out.png", img_azumanga)
+    #
+    # window_name = "Debug"
+    #
+    # img_bloom = cv2.imread("bloom.png")
+    # height = img_bloom.shape[0]
+    # width = img_bloom.shape[1]
+    # diag = int(np.linalg.norm([height, width]))
+    #
+    # gray = cv2.cvtColor(img_bloom, cv2.COLOR_BGR2GRAY)
+    # ret, threshed = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
+    # struct_element = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3), (1, 1))
+    # threshed = cv2.erode(threshed, struct_element)
+    # threshed = cv2.dilate(threshed, struct_element)
+    # edges = cv2.Canny(threshed, 100, 200)
+    # edges = cv2.dilate(edges, struct_element)
+    # edges = edges & threshed
+    #
+    # # ret, threshed = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY)
+    # cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # # cv2.namedWindow("thresh", cv2.WINDOW_NORMAL)
+    #
+    # def debug_callback(arg):
+    #     draw_on = img_bloom.copy()
+    #     lines = cv2.HoughLines(edges, 1, np.pi / 180, arg)
+    #     if lines is not None:
+    #         print(len(lines))
+    #         for line in lines:
+    #             print(line)
+    #             rho, theta = line[0]
+    #             a = np.cos(theta)
+    #             b = np.sin(theta)
+    #             x0 = a * rho
+    #             y0 = b * rho
+    #             x1 = int(x0 + diag * b)
+    #             y1 = int(y0 - diag * a)
+    #             x2 = int(x0 - diag * b)
+    #             y2 = int(y0 + diag * a)
+    #             cv2.line(draw_on, (x1, y1), (x2, y2), (0, 0, 255), 5)
+    #     cv2.imshow(window_name, draw_on)
+    #
+    # cv2.createTrackbar("Thresh", window_name, 400, 2000, debug_callback)
+    #
+    # debug_callback(400)
+    # c = cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
-    for panel in azumanga_panels:
-        panel.blank_bubbles(img_azumanga)
+    # cv2.imwrite("debug.png", threshed)
 
-    cv2.imwrite("out.png", img_azumanga)
-    # img_bloom = cv2.imread(r"bloom.png")
-    # img_bloom = cv2.blur(img_bloom, (5, 5))
-    # border_thickness = 1
-    # bloom_shape = img_bloom.shape
-    # bordered_img = np.zeros((bloom_shape[0] + border_thickness * 2, bloom_shape[1] + border_thickness * 2, bloom_shape[2]), np.uint8)
-    # # bordered_img = cv2.bitwise_not(bordered_img)
-    # bordered_img[border_thickness:border_thickness+bloom_shape[0], border_thickness:border_thickness+bloom_shape[1]] = img_bloom
-    # contours, top_contours, contour_children = get_contours(bordered_img)
-    # for contour in top_contours:
-    #     cv2.drawContours(bordered_img, contours, contour, (255, 0, 0), 3)
-    # cv2.imwrite("contours.png", bordered_img)
+    for input_file in glob.glob("input/*.jpg"):
+        img_bloom = cv2.imread(input_file)
+        lines = get_panel_lines(img_bloom)
+        draw_hough_lines(img_bloom, lines)
+    #     height = img_bloom.shape[0]
+    #     width = img_bloom.shape[1]
+    #     area = width * height
+    #
+    #     mask = np.full((height, width), 0, dtype="uint8")
+    #
+    #     contours, top_contours, contour_children = get_contours(img_bloom, max_contour_area_frac=1)
+    #     bg_contour = get_bg_contour(contours, top_contours, area * 0.5)
+    #
+    #     if bg_contour is not None:
+    #         cv2.drawContours(mask, contours, bg_contour, 127, -1)
+    #         for child in contour_children[bg_contour]:
+    #             cv2.drawContours(mask, contours, child, 255, -1)
+    #         img_bloom[mask > 0] = (0, 255, 0)
+    #         img_bloom[mask > 128] = (255, 0, 0)
+        cv2.imwrite("output/" + input_file.split("/")[-1], img_bloom)
 
 
 
